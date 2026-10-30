@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">FF Assist</string>
+    <string name="acc_desc">Inyecta arrastres para compensar el retroceso y toques de asistencia de mira.</string>
+</resources>
