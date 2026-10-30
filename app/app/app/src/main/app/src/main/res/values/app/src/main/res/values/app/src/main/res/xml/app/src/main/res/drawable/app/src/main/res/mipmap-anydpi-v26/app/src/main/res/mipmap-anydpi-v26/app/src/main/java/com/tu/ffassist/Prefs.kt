@@ -20,5 +20,7 @@ object Prefs {
     const val K_STRENGTH = "strength"
     const val K_INTERVAL = "interval"
     const val K_RADIUS = "radius"
+    const val K_HORIZ = "horiz"
+    const val K_TAP = "tap"
     const val K_COLOR = "color"
 }
