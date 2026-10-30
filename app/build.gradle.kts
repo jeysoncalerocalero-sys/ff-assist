@@ -15,19 +15,6 @@ android {
         versionName = "1.0"
     }
 
-    sourceSets["main"].apply {
-        manifest.srcFile("app/app/src/main/AndroidManifest.xml")
-        res.srcDirs("app/app/src/main/app/src/main/res")
-        java.srcDirs("app/app/src/main/app/src/main/java")
-    }
-
-    buildTypes {
-        release {
-            isMinifyEnabled = false
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "app/proguard-rules.pro")
-        }
-    }
-
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
