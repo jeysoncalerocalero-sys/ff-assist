@@ -23,6 +23,7 @@ import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
+import android.provider.Settings
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -30,6 +31,7 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.core.app.ServiceCompat
 import kotlin.math.hypot
 
@@ -45,14 +47,25 @@ class OverlayService : Service() {
     private var panel: LinearLayout? = null
     private val handler = Handler(Looper.getMainLooper())
 
+    private var tvStrength: TextView? = null
+    private var tvInterval: TextView? = null
+    private var tvRadius: TextView? = null
+    private var tvHoriz: TextView? = null
+    private var bRecoil: Button? = null
+    private var bAim: Button? = null
+    private var bTap: Button? = null
+
     private var firing = false
     private var aiming = false
+    private var tapMode = true
     private var processing = false
     private var lastAim = 0L
+    private var driftSign = 1
 
     private var strength = 14
     private var intervalMs = 26L
-    private var radius = 45
+    private var radius = 40
+    private var hStrength = 3
     private val aimThrottle = 140L
 
     private var projection: MediaProjection? = null
@@ -67,7 +80,9 @@ class OverlayService : Service() {
             val dm = resources.displayMetrics
             val x = dm.widthPixels / 2
             val y = (dm.heightPixels * 0.76f).toInt()
-            TapService.instance?.swipe(x, y, x, y + strength, intervalMs)
+            val dx = if (hStrength > 0) driftSign * hStrength else 0
+            driftSign = -driftSign
+            TapService.instance?.swipe(x, y, x + dx, y + strength, intervalMs)
             handler.postDelayed(this, intervalMs)
         }
     }
@@ -77,13 +92,34 @@ class OverlayService : Service() {
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
         strength = Prefs.getInt(this, Prefs.K_STRENGTH, 14)
         intervalMs = Prefs.getLong(this, Prefs.K_INTERVAL, 26L)
-        radius = Prefs.getInt(this, Prefs.K_RADIUS, 45)
-        ServiceCompat.startForeground(
-            this, 1, notif("FF Assist activo"),
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-        )
-        addCrosshair()
-        addPanel()
+        radius = Prefs.getInt(this, Prefs.K_RADIUS, 40)
+        hStrength = Prefs.getInt(this, Prefs.K_HORIZ, 3)
+        tapMode = Prefs.getInt(this, Prefs.K_TAP, 1) == 1
+
+        try {
+            ServiceCompat.startForeground(
+                this, 1, notif("FF Assist activo"),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            )
+        } catch (_: Exception) {
+        }
+
+        if (!Settings.canDrawOverlays(this)) {
+            toast("Falta el permiso de superposición")
+            stopSelf()
+            return
+        }
+
+        try {
+            addCrosshair()
+        } catch (e: Exception) {
+            toast("Error de mira: ${e.message}")
+        }
+        try {
+            addPanel()
+        } catch (e: Exception) {
+            toast("Error de panel: ${e.message}")
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -95,6 +131,10 @@ class OverlayService : Service() {
             if (data != null) startProjection(code, data)
         }
         return START_STICKY
+    }
+
+    private fun toast(t: String) {
+        Toast.makeText(this, t, Toast.LENGTH_LONG).show()
     }
 
     private fun lp(w: Int, h: Int) = WindowManager.LayoutParams(
@@ -134,20 +174,22 @@ class OverlayService : Service() {
             textSize = 12f
         })
 
-        fun row(label: String, minus: () -> Unit, plus: () -> Unit) {
+        fun row(label: String, holder: (TextView) -> Unit, minus: () -> Unit, plus: () -> Unit) {
             val r = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             r.addView(Button(this).apply { text = "-"; setOnClickListener { minus() } })
-            r.addView(TextView(this).apply {
+            val tv = TextView(this).apply {
                 text = label
                 setTextColor(Color.WHITE)
                 textSize = 11f
                 setPadding(14, 0, 14, 0)
-            })
+            }
+            holder(tv)
+            r.addView(tv)
             r.addView(Button(this).apply { text = "+"; setOnClickListener { plus() } })
             box.addView(r)
         }
 
-        row("Fuerza $strength", {
+        row("Fuerza $strength", { tvStrength = it }, {
             strength = (strength - 2).coerceAtLeast(2)
             Prefs.setInt(this, Prefs.K_STRENGTH, strength)
             refresh()
@@ -157,7 +199,7 @@ class OverlayService : Service() {
             refresh()
         })
 
-        row("Vel $intervalMs", {
+        row("Vel $intervalMs", { tvInterval = it }, {
             intervalMs = (intervalMs - 4).coerceAtLeast(10)
             Prefs.setLong(this, Prefs.K_INTERVAL, intervalMs)
             refresh()
@@ -167,7 +209,7 @@ class OverlayService : Service() {
             refresh()
         })
 
-        row("Radio $radius", {
+        row("Radio $radius", { tvRadius = it }, {
             radius = (radius - 10).coerceAtLeast(10)
             Prefs.setInt(this, Prefs.K_RADIUS, radius)
             refresh()
@@ -177,20 +219,42 @@ class OverlayService : Service() {
             refresh()
         })
 
-        box.addView(Button(this).apply {
-            text = "RECOIL"
+        row("Horiz $hStrength", { tvHoriz = it }, {
+            hStrength = (hStrength - 1).coerceAtLeast(0)
+            Prefs.setInt(this, Prefs.K_HORIZ, hStrength)
+            refresh()
+        }, {
+            hStrength = (hStrength + 1).coerceAtMost(10)
+            Prefs.setInt(this, Prefs.K_HORIZ, hStrength)
+            refresh()
+        })
+
+        bRecoil = Button(this).apply {
+            text = if (firing) "RECOIL ON" else "RECOIL"
             setOnClickListener {
                 firing = !firing
                 handler.removeCallbacks(recoil)
                 if (firing) handler.post(recoil)
                 refresh()
             }
-        })
+        }
+        box.addView(bRecoil)
 
-        box.addView(Button(this).apply {
-            text = "AIM"
+        bAim = Button(this).apply {
+            text = if (aiming) "AIM ON" else "AIM"
             setOnClickListener { aiming = !aiming; refresh() }
-        })
+        }
+        box.addView(bAim)
+
+        bTap = Button(this).apply {
+            text = if (tapMode) "TAP ON" else "TAP OFF"
+            setOnClickListener {
+                tapMode = !tapMode
+                Prefs.setInt(this@OverlayService, Prefs.K_TAP, if (tapMode) 1 else 0)
+                refresh()
+            }
+        }
+        box.addView(bTap)
 
         box.addView(Button(this).apply {
             text = "MIRA"
@@ -230,11 +294,13 @@ class OverlayService : Service() {
     }
 
     private fun refresh() {
-        ((panel?.getChildAt(1) as? LinearLayout)?.getChildAt(1) as? TextView)?.text = "Fuerza $strength"
-        ((panel?.getChildAt(2) as? LinearLayout)?.getChildAt(1) as? TextView)?.text = "Vel $intervalMs"
-        ((panel?.getChildAt(3) as? LinearLayout)?.getChildAt(1) as? TextView)?.text = "Radio $radius"
-        (panel?.getChildAt(4) as? Button)?.text = if (firing) "RECOIL ON" else "RECOIL"
-        (panel?.getChildAt(5) as? Button)?.text = if (aiming) "AIM ON" else "AIM"
+        tvStrength?.text = "Fuerza $strength"
+        tvInterval?.text = "Vel $intervalMs"
+        tvRadius?.text = "Radio $radius"
+        tvHoriz?.text = "Horiz $hStrength"
+        bRecoil?.text = if (firing) "RECOIL ON" else "RECOIL"
+        bAim?.text = if (aiming) "AIM ON" else "AIM"
+        bTap?.text = if (tapMode) "TAP ON" else "TAP OFF"
     }
 
     private fun makeDraggable(v: View, p: WindowManager.LayoutParams) {
@@ -260,39 +326,45 @@ class OverlayService : Service() {
 
     private fun startProjection(code: Int, data: Intent) {
         if (projection != null) return
-        val mpm = getSystemService(MediaProjectionManager::class.java)
-        val proj = mpm.getMediaProjection(code, data) ?: return
-        projection = proj
+        try {
+            ServiceCompat.startForeground(
+                this, 2, notif("Aim listo"),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            )
+            val mpm = getSystemService(MediaProjectionManager::class.java)
+            val proj = mpm.getMediaProjection(code, data) ?: return
+            projection = proj
+            proj.registerCallback(object : MediaProjection.Callback() {
+                override fun onStop() { aiming = false }
+            }, Handler(Looper.getMainLooper()))
 
-        val dm = resources.displayMetrics
-        val cw = (dm.widthPixels / 2).coerceAtLeast(240)
-        val ch = (dm.heightPixels / 2).coerceAtLeast(240)
+            val dm = resources.displayMetrics
+            val cw = (dm.widthPixels / 2).coerceAtLeast(240)
+            val ch = (dm.heightPixels / 2).coerceAtLeast(240)
 
-        val t = HandlerThread("aim").also { it.start() }
-        aimThread = t
-        val h = Handler(t.looper)
-        aimHandler = h
+            val t = HandlerThread("aim").also { it.start() }
+            aimThread = t
+            val h = Handler(t.looper)
+            aimHandler = h
 
-        val r = ImageReader.newInstance(cw, ch, PixelFormat.RGBA_8888, 2)
-        reader = r
-        vdisplay = proj.createVirtualDisplay(
-            "aim", cw, ch, dm.densityDpi,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            r.surface, null, h
-        )
+            val r = ImageReader.newInstance(cw, ch, PixelFormat.RGBA_8888, 2)
+            reader = r
+            vdisplay = proj.createVirtualDisplay(
+                "aim", cw, ch, dm.densityDpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                r.surface, null, h
+            )
 
-        r.setOnImageAvailableListener({ ir ->
-            val img = ir.acquireLatestImage() ?: return@setOnImageAvailableListener
-            if (processing) { img.close(); return@setOnImageAvailableListener }
-            processing = true
-            h.post { analyze(img) }
-        }, h)
-
-        ServiceCompat.startForeground(
-            this, 2, notif("Aim listo"),
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-        )
+            r.setOnImageAvailableListener({ ir ->
+                val img = ir.acquireLatestImage() ?: return@setOnImageAvailableListener
+                if (processing) { img.close(); return@setOnImageAvailableListener }
+                processing = true
+                h.post { analyze(img) }
+            }, h)
+        } catch (e: Exception) {
+            toast("Error de captura: ${e.message}")
+        }
     }
 
     private fun analyze(image: Image) {
@@ -310,8 +382,8 @@ class OverlayService : Service() {
 
             val x0 = (w * 0.28f).toInt()
             val x1 = (w * 0.72f).toInt()
-            val y0 = (hgt * 0.12f).toInt()
-            val y1 = (hgt * 0.82f).toInt()
+            val y0 = (hgt * 0.10f).toInt()
+            val y1 = (hgt * 0.84f).toInt()
             val rw = x1 - x0
             val rh = y1 - y0
             if (rw <= 0 || rh <= 0) return
@@ -319,9 +391,8 @@ class OverlayService : Service() {
             val px = IntArray(rw * rh)
             bmp.getPixels(px, 0, rw, x0, y0, rw, rh)
 
-            var sx = 0L
-            var sy = 0L
-            var n = 0
+            var minY = rh
+            var count = 0
             var i = 0
             for (y in 0 until rh) {
                 for (x in 0 until rw) {
@@ -330,16 +401,41 @@ class OverlayService : Service() {
                     val gg = (c shr 8) and 0xFF
                     val bb = c and 0xFF
                     if (rr > 110 && rr - gg > 45 && rr - bb > 45) {
-                        sx += x
-                        sy += y
-                        n++
+                        count++
+                        if (y < minY) minY = y
                     }
                 }
             }
-            if (n < 40) return
+            if (count < 40 || minY == rh) return
 
-            val cx = x0 + (sx / n).toInt()
-            val cy = y0 + (sy / n).toInt()
+            val band = (rh * 0.18f).toInt().coerceAtLeast(6)
+            val w0 = (rw / 6f).coerceAtLeast(1f)
+            val centerCol = rw / 2f
+
+            var sw = 0.0
+            var sxw = 0.0
+            var syw = 0.0
+            i = 0
+            for (y in 0 until rh) {
+                for (x in 0 until rw) {
+                    val c = px[i++]
+                    if (y > minY + band) continue
+                    val rr = (c shr 16) and 0xFF
+                    val gg = (c shr 8) and 0xFF
+                    val bb = c and 0xFF
+                    if (rr > 110 && rr - gg > 45 && rr - bb > 45) {
+                        val dcol = (x - centerCol) / w0
+                        val wgt = 1.0 / (1.0 + dcol * dcol)
+                        sw += wgt
+                        sxw += x * wgt
+                        syw += y * wgt
+                    }
+                }
+            }
+            if (sw <= 0.0) return
+
+            val cx = x0 + (sxw / sw).toInt()
+            val cy = y0 + (syw / sw).toInt()
 
             val dm = resources.displayMetrics
             val scaleX = dm.widthPixels.toFloat() / w
@@ -356,7 +452,7 @@ class OverlayService : Service() {
             val cyScreen = dm.heightPixels / 2f
 
             if (dist < radius) {
-                TapService.instance?.tap((cx * scaleX).toInt(), (cy * scaleY).toInt())
+                if (tapMode) TapService.instance?.tap((cx * scaleX).toInt(), (cy * scaleY).toInt())
             } else {
                 TapService.instance?.swipe(
                     cxScreen.toInt(), cyScreen.toInt(),
