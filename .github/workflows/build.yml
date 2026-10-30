@@ -12,6 +12,15 @@ jobs:
       - uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.7'
+      - name: Normalizar estructura
+        run: |
+          set -e
+          mkdir -p app/src/main/java app/src/main/res
+          MF=$(find . -name AndroidManifest.xml -not -path "./app/src/main/*" | head -n1)
+          cp "$MF" app/src/main/AndroidManifest.xml
+          for d in $(find . -type d -name res -not -path "./app/src/main/res"); do cp -r "$d"/* app/src/main/res/ || true; done
+          find . -name "*.kt" -not -path "./app/src/main/java/*" -exec cp {} app/src/main/java/ \;
+          find app/src/main -maxdepth 3 | sort
       - run: gradle wrapper --gradle-version 8.7
       - run: ./gradlew assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
